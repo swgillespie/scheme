@@ -1,0 +1,109 @@
+#ifndef INTRINSIC_DEF
+ #define INTRINSIC_DEF(scheme_name, arity, c_name, implementation)
+#endif
+
+INTRINSIC_DEF("+", 2, numeric_add, {
+    scheme_number lhs = 0;
+    scheme_number rhs = 0;
+    if (!sexp_extract_number(args[0], &lhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (!sexp_extract_number(args[1], &rhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    return gc_allocate_number(lhs + rhs);
+});
+
+INTRINSIC_DEF("-", 2, numeric_sub, {
+    scheme_number lhs = 0;
+    scheme_number rhs = 0;
+    if (!sexp_extract_number(args[0], &lhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (!sexp_extract_number(args[1], &rhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    return gc_allocate_number(lhs - rhs);
+});
+
+INTRINSIC_DEF("*", 2, numeric_mul, {
+    scheme_number lhs = 0;
+    scheme_number rhs = 0;
+    if (!sexp_extract_number(args[0], &lhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (!sexp_extract_number(args[1], &rhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    return gc_allocate_number(lhs * rhs);
+});
+
+INTRINSIC_DEF("/", 2, numeric_div, {
+    scheme_number lhs = 0;
+    scheme_number rhs = 0;
+    if (!sexp_extract_number(args[0], &lhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (!sexp_extract_number(args[1], &rhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (rhs == 0) {
+        fatal_error("divided by zero");
+    }
+
+    return gc_allocate_number(lhs / rhs);
+});
+
+INTRINSIC_DEF("car", 1, list_car, {
+    sexp car = NULL;
+    sexp cdr = NULL;
+    if (!sexp_extract_cons(args[0], &car, &cdr)) {
+        fatal_error("type error: not a list");
+    }
+
+    return car;
+});
+
+INTRINSIC_DEF("cdr", 1, list_cdr, {
+    sexp car = NULL;
+    sexp cdr = NULL;
+    if (!sexp_extract_cons(args[0], &car, &cdr)) {
+        fatal_error("type error: not a list");
+    }
+
+    return cdr;
+});
+
+INTRINSIC_DEF("cons", 2, list_cons, {
+    return gc_allocate_cons(args[0], args[1]);
+});
+
+INTRINSIC_DEF("read", 0, read_sexp, {
+    sexp result = NULL; 
+    sexp error = NULL;
+    if (!reader_read(stdin, &result, &error)) {
+        assert(error->kind == SEXP_STRING);
+        fatal_error("read error: %s", error->string_value);
+    }
+
+    return result;
+});
+
+INTRINSIC_DEF("eval", 1, eval_sexp, {
+    return scheme_global_eval(args[0]);
+});
+
+INTRINSIC_DEF("println", 1, print_sexp, {
+    sexp_pretty_print(args[0], stdout);
+    fprintf(stdout, "\n");
+    fflush(stdout);
+    return gc_allocate_empty();
+});
