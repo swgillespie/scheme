@@ -7,6 +7,7 @@
 #define ERROR_MESSAGE_BUFSIZE 1024
 #define MAX_IDENTIFIER_SIZE 64
 #define MAX_NUMBER_SIZE 10
+#define MAX_STRING_LITERAL_SIZE 256
 
 #define TRY(expr) if (!(expr)) return false
 
@@ -81,6 +82,7 @@ static bool is_scheme_allowed_ident_start(char c) {
         case '?':
         case '!':
         case '=':
+        case '.':
             return true;
         default:
             return false;
@@ -176,6 +178,32 @@ static bool read_quote(FILE* stream, sexp* result_sexp, char* error_message_buf)
     return true;
 }
 
+static bool read_string(FILE* stream, sexp* result_sexp, char* error_message_buf) {
+    assert(peek(stream) == '"');
+    TRY(expect(stream, '"', error_message_buf));
+    // TODO escape characters
+    char str_buf[MAX_STRING_LITERAL_SIZE];
+    memset(str_buf, 0, MAX_STRING_LITERAL_SIZE);
+    size_t idx = 0;
+    while (peek(stream) != '"') {
+        char peeked = peek(stream);
+        if (peeked == EOF) {
+            ERROR_AND_RETURN("unexpected EOF while scanning string literal");
+        }
+
+        str_buf[idx++] = peeked;
+        (void)fgetc(stream);
+        if (idx == MAX_STRING_LITERAL_SIZE - 1) {
+            ERROR_AND_RETURN("string literal too large");
+        }
+    }
+
+    TRY(expect(stream, '"', error_message_buf));
+    str_buf[MAX_STRING_LITERAL_SIZE - 1] = 0;
+    *result_sexp = gc_allocate_string(str_buf);
+    return true;
+}
+
 static bool read_atom(FILE* stream, sexp* result_sexp, char* error_message_buf) {
     skip_to_first_nonwhitespace_char(stream);
     char peeked = peek(stream);
@@ -192,6 +220,8 @@ static bool read_atom(FILE* stream, sexp* result_sexp, char* error_message_buf) 
         return read_hash(stream, result_sexp, error_message_buf);  
     } else if (peeked == '\'') {
         return read_quote(stream, result_sexp, error_message_buf);  
+    } else if (peeked == '"') {
+        return read_string(stream, result_sexp, error_message_buf);  
     } else {
         ERROR_AND_RETURN("unexpected char when reading atom: %c", peeked);
     }

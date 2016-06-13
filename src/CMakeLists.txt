@@ -29,3 +29,9 @@ add_executable(scheme
     activation.c
     types.c
     intrinsics.c)
+
+install (TARGETS scheme DESTINATION bin)
+install (FILES 
+    "scm/prelude.scm" 
+    "scm/test.scm"
+    DESTINATION lib/scheme)

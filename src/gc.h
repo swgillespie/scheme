@@ -11,7 +11,7 @@ sexp gc_allocate_symbol(const char* sym);
 sexp gc_allocate_bool(bool value);
 sexp gc_allocate_cons(sexp car, sexp cdr);
 activation* gc_allocate_activation();
-sexp gc_allocate_proc(scheme_number arity, sexp args, sexp body, activation* activation);
+sexp gc_allocate_proc(scheme_number arity, sexp args, sexp body, activation* activation, scheme_symbol name);
 sexp gc_allocate_native_proc(scheme_number arity, sexp (*function_pointer)(sexp*), const char* name);
 
 // Forces a garbage collection.

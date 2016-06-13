@@ -17,6 +17,13 @@ static void print_atom(sexp s, FILE* output_stream) {
     }
 
     if (sexp_extract_symbol(s, &sym)) {
+        if (strcmp(sym, ".") == 0) {
+            // . as a symbol leads to goofy output
+            // this is what guile does
+            fputs("#{.}", output_stream);
+            return;
+        }
+
         fprintf(output_stream, "%s", sym);
         return;
     }
@@ -37,7 +44,12 @@ static void print_atom(sexp s, FILE* output_stream) {
     }
 
     if (sexp_is_proc(s)) {
-        fputs("#<procedure>", output_stream);
+        fprintf(output_stream, "#<procedure \"%s\">", s->name);
+        return;
+    }
+
+    if (sexp_is_native_proc(s)) {
+        fprintf(output_stream, "#<native procedure \"%s\">", s->native_name);
         return;
     }
 
@@ -75,7 +87,7 @@ void sexp_pretty_print(sexp s, FILE* output_stream) {
         }
 
         fputs(" . ", output_stream);
-        sexp_pretty_print(cdr,output_stream);
+        sexp_pretty_print(cdr, output_stream);
         break;
     }
 

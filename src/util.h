@@ -13,6 +13,8 @@
 #define UNREACHABLE() PANIC("entered unreachable code")
 #define NYI() PANIC("not implemented")
 
+#define STD_LIBRARY_LOCATION "/usr/local/lib/scheme/"
+
 // Prints a message to standard error and aborts. 
 // Should be called through the PANIC macro instead, since that adds line and file information.
 void panic_impl(const char* file, int line, const char* func, const char* msg, ...);

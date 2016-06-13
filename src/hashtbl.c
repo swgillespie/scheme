@@ -2,7 +2,7 @@
 #include "hashtbl.h"
 #include "util.h"
 
-#define HASHTABLE_DEFAULT_SIZE 32
+#define HASHTABLE_DEFAULT_SIZE 64
 
 void hashtbl_initialize(hashtbl* hash, hash_function hash_fun, equality_function eq_fun) {
     hashtbl_entry** table  = calloc(HASHTABLE_DEFAULT_SIZE, sizeof(hashtbl_entry*));

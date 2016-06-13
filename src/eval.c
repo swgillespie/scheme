@@ -1,23 +1,38 @@
 #include <assert.h>
 #include <string.h>
+#include <errno.h>
 #include "eval.h"
 #include "gc.h"
 #include "util.h"
 #include "intrinsics.h"
+#include "reader.h"
 
 #define MAXIMUM_CALL_DEPTH 256
 #define MAXIMUM_NATIVE_CALL_ARGS 16
 
-static size_t activation_index = 0;
-static activation* activation_stack[MAXIMUM_CALL_DEPTH];
-
 static activation* global_activation;
+static activation* current_activation;
+
+typedef struct _thunk {
+    activation* activation;
+    sexp value;
+    bool needs_to_be_called;
+} thunk;
+
+static inline thunk thunk_new(activation* act, sexp value, bool needs_to_be_called) {
+    assert(act != NULL);
+
+    thunk t;
+    t.value = value;
+    t.needs_to_be_called = needs_to_be_called;
+    t.activation = act;
+    return t;
+}
 
 void scheme_initialize() {
     // initialize the global activation.
     global_activation = gc_allocate_activation();
-    activation_initialize(global_activation, NULL);
-    activation_stack[activation_index++] = global_activation;
+    activation_initialize(global_activation, NULL, "<global>");
 
     // set up all intrinsics
     #define INTRINSIC_DEF(scheme_name, arity, c_name, impl) \
@@ -29,15 +44,12 @@ void scheme_initialize() {
 
     #include "intrinsics.def"
     #undef INTRINSIC_DEF
+
+    // load the prelude. hard coded for now.
+    scheme_eval_file(STD_LIBRARY_LOCATION "prelude.scm");
 }
 
-static void fail_on_stack_overflow() {
-    if (activation_index >= MAXIMUM_CALL_DEPTH) {
-        fatal_error("activation stack overflow");
-    }
-}
-
-static sexp eval_atom(sexp atom, activation* activation) {
+static thunk eval_atom(sexp atom, activation* act) {
     // all atoms evaluate to themselves except for symbols,
     // which eval to their binding in the activation.
     assert(!sexp_is_cons(atom));
@@ -47,18 +59,18 @@ static sexp eval_atom(sexp atom, activation* activation) {
     assert(!sexp_is_proc(atom));
     scheme_symbol sym;
     if (!sexp_extract_symbol(atom, &sym)) {
-        return atom;
+        return thunk_new(act, atom, false);
     }
 
     sexp result;
-    if (!activation_get_binding(activation, sym, &result)) {
-        fatal_error("unbound symbol: %s", sym);
+    if (!activation_get_binding(act, sym, &result)) {
+        scheme_runtime_error("unbound symbol: %s", sym);
     }
 
-    return result;
+    return thunk_new(act, result, false);
 }
 
-static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* result) {
+static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, thunk* result) {
     scheme_symbol sym = NULL;
     if (!sexp_extract_symbol(car, &sym)) {
         return false;
@@ -70,27 +82,35 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp define_sym = NULL;
         sexp define_value = NULL;
         if (!sexp_extract_cons(cdr, &define_sym, &define_value)) {
-            fatal_error("invalid define fundamental form");
+            scheme_runtime_error("invalid define fundamental form");
         }
 
         scheme_symbol define_name = NULL;
         if (!sexp_extract_symbol(define_sym, &define_name)) {
-            fatal_error("first argument to define must be a symbol");
+            scheme_runtime_error("first argument to define must be a symbol");
         }
 
         sexp actual_binding = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(define_value, &actual_binding, &should_be_empty)) {
-            fatal_error("invalid define fundamental form");
+            scheme_runtime_error("invalid define fundamental form");
         }
 
         if (!sexp_is_empty(should_be_empty)) {
-            fatal_error("too many items in define");
+            scheme_runtime_error("too many items in define");
         }
 
         sexp binding_value = scheme_eval(actual_binding, act);
+
+        if (sexp_is_proc(binding_value)) {
+            // shortcut for better output. The form
+            //   (define name (lambda ...))
+            // is assigns the name "name" to the lambda.
+            binding_value->name = define_name;
+        }
+
         activation_add_binding(global_activation, define_name, binding_value);
-        *result = gc_allocate_empty();
+        *result = thunk_new(act, gc_allocate_empty(), false);
         return true;
     }
 
@@ -99,36 +119,35 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp binding_list = NULL;
         sexp body = NULL;
         if (!sexp_extract_cons(cdr, &binding_list, &body)) {
-            fatal_error("invalid let fundamental form");
+            scheme_runtime_error("invalid let fundamental form");
         }
 
         // binding list is itself a list of two-element lists.
         activation* child_act = gc_allocate_activation();
-        activation_initialize(child_act, act);
-        activation_stack[activation_index++] = child_act;
-        fail_on_stack_overflow();
+        // let activations inherit their parent's activation names.
+        activation_initialize(child_act, act, act->name);
 
         FOR_EACH_LIST(binding_list, binding, {
             // binding is a list of two elements
             sexp binding_name = NULL;
             sexp binding_value = NULL;
             if (!sexp_extract_cons(binding, &binding_name, &binding_value)) {
-                fatal_error("invalid let fundamental form");
+                scheme_runtime_error("invalid let fundamental form");
             }
 
             scheme_symbol let_sym = NULL;
             if (!sexp_extract_symbol(binding_name, &let_sym)) {
-                fatal_error("non-symbol in let binding");
+                scheme_runtime_error("non-symbol in let binding");
             }
 
             sexp actual_binding = NULL;
             sexp should_be_empty = NULL;
             if (!sexp_extract_cons(binding_value, &actual_binding, &should_be_empty)) {
-                fatal_error("invalid let-binding list");
+                scheme_runtime_error("invalid let-binding list");
             }
 
             if (!sexp_is_empty(should_be_empty)) {
-                fatal_error("too many items in let-binding");
+                scheme_runtime_error("too many items in let-binding");
             }
 
             sexp value = scheme_eval(actual_binding, child_act);
@@ -139,17 +158,14 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp actual_body = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(body, &actual_body, &should_be_empty)) {
-            fatal_error("invalid let-binding list");
+            scheme_runtime_error("invalid let-binding list");
         }
 
         if (!sexp_is_empty(should_be_empty)) {
-            fatal_error("too many items in let-binding");
+            scheme_runtime_error("too many items in let-binding");
         }
 
-        sexp body_result = scheme_eval(actual_body, child_act);
-        assert(activation_index > 0);
-        activation_stack[--activation_index] = NULL;
-        *result = body_result;
+        *result = thunk_new(child_act, actual_body, true);
         return true;
     }
 
@@ -158,31 +174,31 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp set_sym = NULL;
         sexp set_value = NULL;
         if (!sexp_extract_cons(cdr, &set_sym, &set_value)) {
-            fatal_error("invalid set! fundamental form");
+            scheme_runtime_error("invalid set! fundamental form");
         }
 
         scheme_symbol set_name = NULL;
         if (!sexp_extract_symbol(set_sym, &set_name)) {
-            fatal_error("first argument to define must be a symbol");
+            scheme_runtime_error("first argument to define must be a symbol");
         }
 
         sexp actual_value = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(set_value, &actual_value, &should_be_empty)) {
-            fatal_error("invalid set! fundamental form");
+            scheme_runtime_error("invalid set! fundamental form");
         }
 
         if (!sexp_is_empty(should_be_empty)) {
-            fatal_error("too many items in set!");
+            scheme_runtime_error("too many items in set!");
         }
 
         sexp value = scheme_eval(actual_value, act);
 
         if (!activation_mutate_binding(act, set_name, value)) {
-            fatal_error("unbound symbol: %s", set_name);
+            scheme_runtime_error("unbound symbol: %s", set_name);
         }
 
-        *result = gc_allocate_empty();
+        *result = thunk_new(act, gc_allocate_empty(), false);
         return true;
     }
 
@@ -192,23 +208,34 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp body = NULL;
 
         if (!sexp_extract_cons(cdr, &arguments, &body)) {
-            fatal_error("invalid lambda fundamental form");
+            scheme_runtime_error("invalid lambda fundamental form");
         }
 
         int arity = 0;
-        FOR_EACH_LIST(arguments, arg, ((void)arg, arity++));
+        bool variadic = false;
+        sexp cursor = arguments;
+        while (sexp_is_cons(cursor)) {
+            arity++;
+            cursor = cursor->cdr;
+        }
+
+        if (!sexp_is_empty(cursor) && arity != 0) {
+            variadic = true;
+        }
 
         sexp actual_body = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(body, &actual_body, &should_be_empty)) {
-            fatal_error("invalid lambda fundamental form");
+            scheme_runtime_error("invalid lambda fundamental form");
         }
 
         if (!sexp_is_empty(should_be_empty)) {
-            fatal_error("too many items in set!");
+            scheme_runtime_error("too many items in set!");
         }
 
-        *result = gc_allocate_proc(arity, arguments, actual_body, act);
+        sexp proc = gc_allocate_proc(arity, arguments, actual_body, act, "<lambda>");
+        proc->variadic = variadic;
+        *result = thunk_new(act, proc, false);
         return true;
     }
 
@@ -217,21 +244,26 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp actual_quote = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(cdr, &actual_quote, &should_be_empty)) {
-            fatal_error("invalid quote fundamental form");
+            scheme_runtime_error("invalid quote fundamental form");
         }
 
-        *result = actual_quote;
+        *result = thunk_new(act, actual_quote, false);
         return true;
     }
 
     if (strcmp(sym, "begin") == 0) {
         // (begin <forms>* <final_form>)
-        sexp last_result = NULL;
-        FOR_EACH_LIST(cdr, form, {
-            last_result = scheme_eval(form, act);
-        });
+        sexp cursor = cdr;
+        while (sexp_is_cons(cursor)) {
+            if (sexp_is_empty(cursor->cdr)) break;
 
-        *result = last_result;
+            scheme_eval(cursor->car, act);
+            cursor = cursor->cdr;
+        }
+
+        // cursor->cdr is the tail position of this begin.
+        // we'll attach that one to the thunk.
+        *result = thunk_new(act, cursor->car, true);
         return true;
     }
 
@@ -243,87 +275,161 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         sexp false_branch = NULL;
 
         if (!sexp_extract_cons(cdr, &cond, &true_branch)) {
-            fatal_error("invalid if fundamental form");
+            scheme_runtime_error("invalid if fundamental form");
         }
 
         sexp actual_true_branch = NULL;
         if (!sexp_extract_cons(true_branch, &actual_true_branch, &false_branch)) {
-            fatal_error("invalid if fundamental form");
+            scheme_runtime_error("invalid if fundamental form");
         }
 
         sexp actual_false_branch = NULL;
         sexp should_be_empty = NULL;
         if (!sexp_extract_cons(false_branch, &actual_false_branch, &should_be_empty)) {
-            fatal_error("invalid if fundamental form");
+            scheme_runtime_error("invalid if fundamental form");
         }
 
         if (!sexp_is_empty(should_be_empty)) {
-            fatal_error("too many items in if");
+            scheme_runtime_error("too many items in if");
         }
 
         sexp cond_value = scheme_eval(cond, act);
         if (sexp_is_truthy(cond_value)) {
-            *result = scheme_eval(actual_true_branch, act);
+            *result = thunk_new(act, actual_true_branch, true);
         } else {
-            *result = scheme_eval(actual_false_branch, act);
+            *result = thunk_new(act, actual_false_branch, true);
         }
 
         return true;
     }
 
+    if (strcmp(sym, "and") == 0) {
+        // (and <conds*>)
+        // this needs to be a fundamental form for short-circuit evaluation
+        sexp short_circuit_result;
+        FOR_EACH_LIST(cdr, cond, {
+            sexp eval_result = scheme_eval(cond, act);
+            if (!sexp_is_truthy(eval_result)) {
+                short_circuit_result = gc_allocate_bool(false);
+                return true;
+            }
+        });
+
+        short_circuit_result = gc_allocate_bool(true);
+        *result = thunk_new(act, short_circuit_result, false);
+        return true;
+    }
+
+    if (strcmp(sym, "or") == 0) {
+        // (or <conds*>)
+        // this needs to be a fundamental form for short-circuit evaluation
+        sexp short_circuit_result;
+        FOR_EACH_LIST(cdr, cond, {
+            sexp eval_result = scheme_eval(cond, act);
+            if (sexp_is_truthy(eval_result)) {
+                short_circuit_result = gc_allocate_bool(true);
+                return true;
+            }
+        });
+
+        short_circuit_result = gc_allocate_bool(false);
+        *result = thunk_new(act, short_circuit_result, false);
+        return true;
+    }
+
+    if (strcmp(sym, "define-syntax") == 0) {
+        // define-syntax
+    }
+
     return false;
 }
 
-static sexp eval_call(sexp function, sexp args, activation* act) {
+static sexp eval_list_as_elements(sexp args, activation* act) {
+    if (!sexp_is_cons(args)) {
+        return scheme_eval(args, act);
+    }
+
+    sexp result = gc_allocate_cons(gc_allocate_empty(), gc_allocate_empty());
+    result->car = scheme_eval(args->car, act);
+    result->cdr = eval_list_as_elements(args->cdr, act);
+    return result;
+}
+
+static thunk eval_call(sexp function, sexp args, activation* act) {
     // the arity must be an exact match
     assert(sexp_is_proc(function));
     scheme_number arity = 0;
     FOR_EACH_LIST(args, arg, ((void)arg, arity++));
-    if (arity != function->arity) {
-        fatal_error("called function with wrong arity");
+    if (arity < function->required_arity) {
+        scheme_runtime_error("called function with incorrect arity");
     }
 
-    // for the eval we set up two activations. The outermost one is 
-    // the activation of the lambda (for captured variables). The innermost
-    // one is for function parameters.
-    activation_stack[activation_index++] = function->activation;
-    fail_on_stack_overflow();
-
     activation* child_act = gc_allocate_activation();
-    activation_initialize(child_act, function->activation);
-    activation_stack[activation_index++] = child_act;
-    fail_on_stack_overflow();
+    activation_initialize(child_act, function->activation, function->name);
 
-    FOR_EACH_LIST_2(function->arguments, args, formal_param, actual_param, {
-        scheme_symbol param_name = NULL;
-        if (!sexp_extract_symbol(formal_param, &param_name)) {
-            PANIC("function parameter not a symbol?");
+    size_t arity_count = 0;
+
+    if (function->variadic) {
+        // the FOR_EACH_LIST_2 macro does not work on improper lists.
+
+
+        // bind the remainder of the arguments to the variadic parameter.
+        sexp actual_cursor = args;
+        sexp formal_cursor = function->arguments;
+        while (sexp_is_cons(formal_cursor)) {
+            assert(sexp_is_cons(actual_cursor));
+            // actual_cursor->car = the value we need to eval and bind to...
+            // formal_cursor->car = the name of the parameter
+            assert(sexp_is_symbol(formal_cursor->car));
+            sexp res = scheme_eval(actual_cursor->car, act);
+            activation_add_binding(child_act, formal_cursor->car->symbol_value, res);
+
+            actual_cursor = actual_cursor->cdr;
+            formal_cursor = formal_cursor->cdr;
         }
 
-        sexp param_value = scheme_eval(actual_param, act);
-        activation_add_binding(child_act, param_name, param_value);
-    });
+        // formal_cursor is not a cons. Since we're variadic, it must be a symbol (i.e. not empty)
+        assert(sexp_is_symbol(formal_cursor));
+        assert(sexp_is_cons(actual_cursor) || sexp_is_empty(actual_cursor));
+        scheme_symbol vararg_variable = formal_cursor->symbol_value;
+
+        // now we have to bind variable arguments, unless it's empty.
+        if (sexp_is_empty(actual_cursor)) {
+            activation_add_binding(child_act, vararg_variable, actual_cursor);
+        } else {
+            // actual_cursor points to an unevaluated list of arguments.
+            // we have to evaluate them all and pass them, in list form,
+            // to the function.
+            sexp actual_arg_list = eval_list_as_elements(actual_cursor, act);
+
+            activation_add_binding(child_act, vararg_variable, actual_arg_list);
+            // whew!
+        }
+    } else {
+        // bind all required arguments
+        FOR_EACH_LIST_2(function->arguments, args, formal_param, actual_param, {
+            if (function->variadic && arity_count++ == function->required_arity) break;
+
+            scheme_symbol param_name = NULL;
+            if (!sexp_extract_symbol(formal_param, &param_name)) {
+                PANIC("function parameter not a symbol?");
+            }
+
+            sexp param_value = scheme_eval(actual_param, act);
+            activation_add_binding(child_act, param_name, param_value);
+        });
+    }
 
     // now we can eval the body of the lambda.
-    sexp lambda_result = scheme_eval(function->body, child_act);
-
-    // one for the parameter actiation
-    assert(activation_index > 1);
-    activation_stack[activation_index--] = NULL;
-    // ... and one for the lambda activation
-    activation_stack[activation_index--] = NULL;
-    return lambda_result;    
+    return thunk_new(child_act, function->body, true);
 }
 
-static sexp eval_native_call(sexp function, sexp args, activation* act) {
+static thunk eval_native_call(sexp function, sexp args, activation* act) {
     assert(sexp_is_native_proc(function));
-    // we don't set up an activation for native calls,
-    // since it can't read or write the current environment.
-
     scheme_number arity = 0;
     FOR_EACH_LIST(args, arg, ((void)arg, arity++));
     if (arity != function->native_arity) {
-        fatal_error("called function with wrong arity");
+        scheme_runtime_error("called function with wrong arity");
     }
 
     sexp native_call_args[MAXIMUM_NATIVE_CALL_ARGS];
@@ -331,16 +437,23 @@ static sexp eval_native_call(sexp function, sexp args, activation* act) {
     FOR_EACH_LIST(args, arg, {
         native_call_args[idx++] = scheme_eval(arg, act);
         if (idx == MAXIMUM_NATIVE_CALL_ARGS) {
-            fatal_error("too many arguments to native function");
+            scheme_runtime_error("too many arguments to native function");
         }
     });
 
-    return function->function_pointer(native_call_args);
+    // call into native code. Can't be a tail call. Make up a fake activation here
+    // so that we can get the name of the function if the called native function errors.
+    activation* old_act = current_activation;
+    current_activation = gc_allocate_activation();
+    activation_initialize(current_activation, old_act, function->native_name);
+    thunk t = thunk_new(act, function->function_pointer(native_call_args), false);
+    current_activation = old_act;
+    return t;
 }
 
-static sexp eval_list(sexp car, sexp cdr, activation* act) {
+static thunk eval_list(sexp car, sexp cdr, activation* act) {
     // this is a call of some sort, or it's a fundamental form.
-    sexp result;
+    thunk result;
     if (eval_fundamental_form(car, cdr, act, &result)) {
         return result;
     } 
@@ -354,25 +467,83 @@ static sexp eval_list(sexp car, sexp cdr, activation* act) {
         return eval_native_call(function, cdr, act);
     }
 
-    fatal_error("called a non-callable value");
+    scheme_runtime_error("called a non-callable value");
     // unreachable
-    return gc_allocate_empty();
+    return thunk_new(act, gc_allocate_empty(), false);
+}
+
+void scheme_eval_file(const char* file) {
+    FILE* f = fopen(file, "r");
+    if (f == NULL) {
+        scheme_runtime_error("failed to import module %s: %s", file, strerror(errno));
+        return;
+    }
+
+    // see below comment for this horrible code
+    ungetc(fgetc(f), f);
+    if (feof(f)) {
+        // nothing to do with empty files.
+        return;
+    }
+
+    sexp out;
+    sexp error;
+    bool had_error = true;
+    while (reader_read(f, &out, &error)) {
+        scheme_global_eval(out);
+
+        // feof really sucks and doesn't work right unless the EOF
+        // has actually been read
+        ungetc(fgetc(f), f);
+        if (feof(f)) {
+            had_error = false;
+            break;
+        }
+    }
+
+    if (had_error) {
+        printf("read error: %s\n", error->string_value);
+    }
 }
 
 sexp scheme_global_eval(sexp program) {
     return scheme_eval(program, global_activation);
 }
 
-sexp scheme_eval(sexp program, activation* activation) {
-    // here we are evaluating a single form.
-    if (!sexp_is_cons(program)) {
-        // atoms just get eval'd directly, nothing fancy.
-        return eval_atom(program, activation);
+sexp scheme_eval(sexp program, activation* act) {
+    // this function contains a trampoline that will continue
+    // calling thunks until it receives something that is not a thunk.
+    thunk result = thunk_new(act, program, true);
+    while (result.needs_to_be_called) {
+        current_activation = result.activation;
+        // here we are evaluating a single form.
+        if (!sexp_is_cons(result.value)) {
+            // atoms just get eval'd directly, nothing fancy.
+            result = eval_atom(result.value, result.activation);
+            continue;
+        }
+
+        sexp car = result.value->car;
+        sexp cdr = result.value->cdr;
+
+        result = eval_list(car, cdr, result.activation);
+        assert(result.activation != NULL);
     }
 
-    sexp car = program->car;
-    sexp cdr = program->cdr;
+    return result.value;
+}
 
-    return eval_list(car, cdr, activation);
+void scheme_runtime_error(scheme_string message_fmt, ...) {
+    va_list args;
+    va_start(args, message_fmt);
+    fprintf(stderr, "runtime error: ");
+    vfprintf(stderr, message_fmt, args);
+    va_end(args);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  at function \"%s\"\n", current_activation->name);
+    
+    // TODO abort or exit?
+    exit(1);
+    //abort();
 }
 

@@ -111,17 +111,19 @@ activation* gc_allocate_activation() {
     return act;
 }
 
-sexp gc_allocate_proc(scheme_number arity, sexp args, sexp body, activation* activation) {
+sexp gc_allocate_proc(scheme_number arity, sexp args, sexp body, activation* activation, scheme_symbol name) {
     sexp s = malloc(sizeof(struct _sexp));
     if (!s) {
         PANIC("out of memory");
     }
 
     s->kind = SEXP_PROC;
-    s->arity = arity;
+    s->required_arity = arity;
+    s->variadic = false;
     s->arguments = args;
     s->body = body;
     s->activation = activation;
+    s->name = name;
     return s;
 }
 

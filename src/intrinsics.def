@@ -6,11 +6,11 @@ INTRINSIC_DEF("+", 2, numeric_add, {
     scheme_number lhs = 0;
     scheme_number rhs = 0;
     if (!sexp_extract_number(args[0], &lhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (!sexp_extract_number(args[1], &rhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     return gc_allocate_number(lhs + rhs);
@@ -20,11 +20,11 @@ INTRINSIC_DEF("-", 2, numeric_sub, {
     scheme_number lhs = 0;
     scheme_number rhs = 0;
     if (!sexp_extract_number(args[0], &lhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (!sexp_extract_number(args[1], &rhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     return gc_allocate_number(lhs - rhs);
@@ -34,11 +34,11 @@ INTRINSIC_DEF("*", 2, numeric_mul, {
     scheme_number lhs = 0;
     scheme_number rhs = 0;
     if (!sexp_extract_number(args[0], &lhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (!sexp_extract_number(args[1], &rhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     return gc_allocate_number(lhs * rhs);
@@ -48,15 +48,15 @@ INTRINSIC_DEF("/", 2, numeric_div, {
     scheme_number lhs = 0;
     scheme_number rhs = 0;
     if (!sexp_extract_number(args[0], &lhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (!sexp_extract_number(args[1], &rhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (rhs == 0) {
-        fatal_error("divided by zero");
+        scheme_runtime_error("divided by zero");
     }
 
     return gc_allocate_number(lhs / rhs);
@@ -66,29 +66,21 @@ INTRINSIC_DEF("=", 2, numeric_equals, {
     scheme_number lhs = 0;
     scheme_number rhs = 0;
     if (!sexp_extract_number(args[0], &lhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     if (!sexp_extract_number(args[1], &rhs)) {
-        fatal_error("type error: not a number");
+        scheme_runtime_error("type error: not a number");
     }
 
     return gc_allocate_bool(lhs == rhs);
-});
-
-INTRINSIC_DEF("not", 1, boolean_not, {
-    if (sexp_is_truthy(args[0])) {
-        return gc_allocate_bool(false);
-    } else {
-        return gc_allocate_bool(true);
-    }
 });
 
 INTRINSIC_DEF("car", 1, list_car, {
     sexp car = NULL;
     sexp cdr = NULL;
     if (!sexp_extract_cons(args[0], &car, &cdr)) {
-        fatal_error("type error: not a list");
+        scheme_runtime_error("type error: not a list");
     }
 
     return car;
@@ -98,7 +90,7 @@ INTRINSIC_DEF("cdr", 1, list_cdr, {
     sexp car = NULL;
     sexp cdr = NULL;
     if (!sexp_extract_cons(args[0], &car, &cdr)) {
-        fatal_error("type error: not a list");
+        scheme_runtime_error("type error: not a list");
     }
 
     return cdr;
@@ -113,7 +105,7 @@ INTRINSIC_DEF("read", 0, read_sexp, {
     sexp error = NULL;
     if (!reader_read(stdin, &result, &error)) {
         assert(error->kind == SEXP_STRING);
-        fatal_error("read error: %s", error->string_value);
+        scheme_runtime_error("read error: %s", error->string_value);
     }
 
     return result;
@@ -123,9 +115,132 @@ INTRINSIC_DEF("eval", 1, eval_sexp, {
     return scheme_global_eval(args[0]);
 });
 
-INTRINSIC_DEF("println", 1, print_sexp, {
-    sexp_pretty_print(args[0], stdout);
+INTRINSIC_DEF("print", 1, print_sexp, {
+    // special case strings because we generally
+    // don't want to print out the quotes of a string
+    scheme_string str;
+    if (sexp_extract_string(args[0], &str)) {
+        fputs(str, stdout);
+    } else {
+        sexp_pretty_print(args[0], stdout);
+    }
+
+    fflush(stdout);
+    return gc_allocate_empty();
+});
+
+INTRINSIC_DEF("println", 1, print_line_sexp, {
+    print_sexp(args);
     fprintf(stdout, "\n");
     fflush(stdout);
+    return gc_allocate_empty();
+});
+
+INTRINSIC_DEF("eq?", 2, sexp_object_equality, {
+    sexp lhs = args[0];
+    sexp rhs = args[1];
+    if (lhs->kind != rhs->kind) {
+        return gc_allocate_bool(false);
+    }
+
+    if (lhs->kind == SEXP_EMPTY && rhs->kind == SEXP_EMPTY) {
+        // only one instance of the empty list.
+        return gc_allocate_bool(true);
+    }
+
+    if (lhs->kind == SEXP_NUMBER && rhs->kind == SEXP_NUMBER) {
+        return gc_allocate_bool(lhs->number_value == rhs->number_value);
+    }
+
+    if (lhs->kind == SEXP_SYMBOL && rhs->kind == SEXP_SYMBOL) {
+        return gc_allocate_bool(strcmp(lhs->symbol_value, rhs->symbol_value) == 0);
+    }
+
+    return gc_allocate_bool(false);
+});
+
+INTRINSIC_DEF("equal?", 2, sexp_equality, {
+    sexp lhs = args[0];
+    sexp rhs = args[1];
+    if (lhs->kind != rhs->kind) {
+        return gc_allocate_bool(false);
+    }
+
+    if (lhs->kind == SEXP_EMPTY && rhs->kind == SEXP_EMPTY) {
+        // only one instance of the empty list.
+        return gc_allocate_bool(true);
+    }
+
+    if (lhs->kind == SEXP_NUMBER && rhs->kind == SEXP_NUMBER) {
+        return gc_allocate_bool(lhs->number_value == rhs->number_value);
+    }
+
+    if (lhs->kind == SEXP_SYMBOL && rhs->kind == SEXP_SYMBOL) {
+        return gc_allocate_bool(strcmp(lhs->symbol_value, rhs->symbol_value) == 0);
+    }
+
+    if (lhs->kind == SEXP_STRING && rhs->kind == SEXP_STRING) {
+        return gc_allocate_bool(strcmp(lhs->string_value, rhs->string_value) == 0);
+    }
+
+    return gc_allocate_bool(false);
+});
+
+
+INTRINSIC_DEF("list?", 1, is_list, {
+    return gc_allocate_bool(sexp_is_cons(args[0]));
+});
+
+INTRINSIC_DEF("proc?", 1, is_proc, {
+    return gc_allocate_bool(sexp_is_proc(args[0]) || sexp_is_native_proc(args[0]));
+});
+
+INTRINSIC_DEF("arity", 1, proc_arity, {
+    if (!sexp_is_proc(args[0]) && !sexp_is_native_proc(args[0])) {
+        scheme_runtime_error("type error: not a proc");
+    }
+
+    return gc_allocate_number(args[0]->kind == SEXP_PROC ? args[0]->required_arity : args[0]->native_arity);
+});
+
+INTRINSIC_DEF("error", 1, raise_error, {
+    scheme_string str;
+    if (!sexp_extract_string(args[0], &str)) {
+        scheme_runtime_error("<non-string argument to error>");
+    } else {
+        scheme_runtime_error(str);
+    }
+    // doesn't return
+    return gc_allocate_empty();
+});
+
+INTRINSIC_DEF("import", 1, module_import, {
+    scheme_symbol sym;
+    if (!sexp_extract_symbol(args[0], &sym)) {
+        scheme_runtime_error("type error: not a symbol");
+    }
+
+    size_t std_len = strlen(STD_LIBRARY_LOCATION);
+    size_t module_len = strlen(sym) + 5; /* .scm */
+    char* buf = calloc(std_len + module_len, sizeof(char));
+    if (!buf) {
+        PANIC("out of memory");
+    }
+
+    strncat(buf, STD_LIBRARY_LOCATION, std_len);
+    strncat(buf, sym, module_len);
+    strcat(buf, ".scm");
+    buf[std_len + module_len - 1] = 0;
+    scheme_eval_file(buf);
+    return gc_allocate_empty();
+});
+
+INTRINSIC_DEF("exit", 1, numeric_exit, {
+    if (!sexp_is_number(args[0])) {
+        scheme_runtime_error("type error: not a number");
+    }
+
+    exit(args[0]->number_value);
+    // does not return
     return gc_allocate_empty();
 });

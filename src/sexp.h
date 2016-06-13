@@ -14,7 +14,8 @@ typedef struct _sexp {
         SEXP_SYMBOL,
         SEXP_BOOL,
         SEXP_PROC,
-        SEXP_NATIVE_PROC
+        SEXP_NATIVE_PROC,
+        SEXP_MACRO
     } kind;
     union {
         struct {
@@ -22,13 +23,19 @@ typedef struct _sexp {
             struct _sexp* cdr;
         };
         struct {
-            scheme_number arity;
+            scheme_symbol name;
+            scheme_number required_arity;
+            bool variadic;
             struct _sexp* arguments;
             struct _sexp* body;
             struct activation* activation;
         };
         struct {
-            const char* name;
+            scheme_symbol macro_name;
+            struct _sexp* macro_arms;
+        };
+        struct {
+            const char* native_name;
             scheme_number native_arity;
             struct _sexp* (*function_pointer)(struct _sexp**);
         };
@@ -57,6 +64,18 @@ static inline bool sexp_is_proc(sexp s) {
 
 static inline bool sexp_is_native_proc(sexp s) {
     return s->kind == SEXP_NATIVE_PROC;
+}
+
+static inline bool sexp_is_macro(sexp s) {
+    return s->kind == SEXP_MACRO;
+}
+
+static inline bool sexp_is_symbol(sexp s) {
+    return s->kind == SEXP_SYMBOL;
+}
+
+static inline bool sexp_is_number(sexp s) {
+    return s->kind == SEXP_NUMBER;
 }
 
 static inline bool sexp_extract_cons(sexp s, sexp* car, sexp* cdr) {
@@ -117,7 +136,7 @@ static inline bool sexp_extract_bool(sexp s, scheme_bool* b) {
             }                            \
                                          \
             if (!sexp_extract_cons(__cursor, &__car, &__cdr)) { \
-                fatal_error("invalid list"); \
+                scheme_runtime_error("invalid list"); \
             }                            \
                                          \
             ident = __car;               \
@@ -149,11 +168,11 @@ static inline bool sexp_extract_bool(sexp s, scheme_bool* b) {
             }                                        \
                                                      \
             if (!sexp_extract_cons(__cursor_one, &__car_one, &__cdr_one)) { \
-                fatal_error("invalid list");         \
+                scheme_runtime_error("invalid list");         \
             }                                        \
                                                      \
             if (!sexp_extract_cons(__cursor_two, &__car_two, &__cdr_two)) { \
-                fatal_error("invalid list");        \
+                scheme_runtime_error("invalid list");        \
             }                                        \
                                                      \
             ident_one = __car_one;                   \
@@ -166,3 +185,7 @@ static inline bool sexp_extract_bool(sexp s, scheme_bool* b) {
 
 // Pretty prints an s-expression to the given output stream
 void sexp_pretty_print(sexp s, FILE* output_stream);
+
+static inline void sexp_pretty_print_stdout(sexp s) {
+    sexp_pretty_print(s, stdout);
+}
