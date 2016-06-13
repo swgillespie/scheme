@@ -75,7 +75,8 @@ void sexp_pretty_print(sexp s, FILE* output_stream) {
         }
 
         fputs(" . ", output_stream);
-        print_atom(cdr, output_stream);
+        sexp_pretty_print(cdr,output_stream);
+        break;
     }
 
     fputc(')', output_stream);

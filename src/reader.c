@@ -210,13 +210,19 @@ static bool read_sublist(FILE* stream, sexp* result_sexp, char* error_message_bu
         *result_sexp = gc_allocate_empty();
         return true;
     }
-    
+
     sexp list = gc_allocate_cons(gc_allocate_empty(), gc_allocate_empty());
     TRY(read_atom(stream, &list->car, error_message_buf));
     skip_to_first_nonwhitespace_char(stream);
     if (peek(stream) != ')') {
         // if I were more clever, this could be written iteratively.
-        TRY(read_sublist(stream, &list->cdr, error_message_buf));
+        if (peek(stream) == '.') {
+            // improper list.
+            TRY(expect(stream, '.', error_message_buf));
+            TRY(read_atom(stream, &list->cdr, error_message_buf));
+        } else {
+            TRY(read_sublist(stream, &list->cdr, error_message_buf));
+        }
     }
 
     *result_sexp = list;
