@@ -80,6 +80,7 @@ static bool is_scheme_allowed_ident_start(char c) {
         case '*':
         case '?':
         case '!':
+        case '=':
             return true;
         default:
             return false;

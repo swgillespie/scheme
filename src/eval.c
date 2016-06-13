@@ -5,7 +5,7 @@
 #include "util.h"
 #include "intrinsics.h"
 
-#define MAXIMUM_CALL_DEPTH 128
+#define MAXIMUM_CALL_DEPTH 256
 #define MAXIMUM_NATIVE_CALL_ARGS 16
 
 static size_t activation_index = 0;
@@ -29,6 +29,12 @@ void scheme_initialize() {
 
     #include "intrinsics.def"
     #undef INTRINSIC_DEF
+}
+
+static void fail_on_stack_overflow() {
+    if (activation_index >= MAXIMUM_CALL_DEPTH) {
+        fatal_error("activation stack overflow");
+    }
 }
 
 static sexp eval_atom(sexp atom, activation* activation) {
@@ -100,6 +106,7 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         activation* child_act = gc_allocate_activation();
         activation_initialize(child_act, act);
         activation_stack[activation_index++] = child_act;
+        fail_on_stack_overflow();
 
         FOR_EACH_LIST(binding_list, binding, {
             // binding is a list of two elements
@@ -140,6 +147,7 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         }
 
         sexp body_result = scheme_eval(actual_body, child_act);
+        assert(activation_index > 0);
         activation_stack[--activation_index] = NULL;
         *result = body_result;
         return true;
@@ -227,6 +235,42 @@ static bool eval_fundamental_form(sexp car, sexp cdr, activation* act, sexp* res
         return true;
     }
 
+    if (strcmp(sym, "if") == 0) {
+        // (if <cond> <true> <false>)
+        // (lambda <args> <body>)
+        sexp cond = NULL;
+        sexp true_branch = NULL;
+        sexp false_branch = NULL;
+
+        if (!sexp_extract_cons(cdr, &cond, &true_branch)) {
+            fatal_error("invalid if fundamental form");
+        }
+
+        sexp actual_true_branch = NULL;
+        if (!sexp_extract_cons(true_branch, &actual_true_branch, &false_branch)) {
+            fatal_error("invalid if fundamental form");
+        }
+
+        sexp actual_false_branch = NULL;
+        sexp should_be_empty = NULL;
+        if (!sexp_extract_cons(false_branch, &actual_false_branch, &should_be_empty)) {
+            fatal_error("invalid if fundamental form");
+        }
+
+        if (!sexp_is_empty(should_be_empty)) {
+            fatal_error("too many items in if");
+        }
+
+        sexp cond_value = scheme_eval(cond, act);
+        if (sexp_is_truthy(cond_value)) {
+            *result = scheme_eval(actual_true_branch, act);
+        } else {
+            *result = scheme_eval(actual_false_branch, act);
+        }
+
+        return true;
+    }
+
     return false;
 }
 
@@ -243,10 +287,12 @@ static sexp eval_call(sexp function, sexp args, activation* act) {
     // the activation of the lambda (for captured variables). The innermost
     // one is for function parameters.
     activation_stack[activation_index++] = function->activation;
+    fail_on_stack_overflow();
 
     activation* child_act = gc_allocate_activation();
     activation_initialize(child_act, function->activation);
     activation_stack[activation_index++] = child_act;
+    fail_on_stack_overflow();
 
     FOR_EACH_LIST_2(function->arguments, args, formal_param, actual_param, {
         scheme_symbol param_name = NULL;
@@ -262,6 +308,7 @@ static sexp eval_call(sexp function, sexp args, activation* act) {
     sexp lambda_result = scheme_eval(function->body, child_act);
 
     // one for the parameter actiation
+    assert(activation_index > 1);
     activation_stack[activation_index--] = NULL;
     // ... and one for the lambda activation
     activation_stack[activation_index--] = NULL;

@@ -4,7 +4,7 @@
 #include "sexp.h"
 #include "eval.h"
 
-int main() {
+static int repl() {
     sexp out;
     sexp error;
     sexp eval_result;
@@ -25,4 +25,49 @@ int main() {
     }
 
     printf("error: %s\n", s);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 1) {
+        return repl();
+    }
+ 
+    if (argc == 2) {
+        FILE* f = fopen(argv[1], "r");
+        if (f == NULL) {
+            perror("failed to open file");
+        }
+
+        if (feof(f)) {
+            // nothing to do with empty files.
+            return 0;
+        }
+
+        scheme_initialize();
+
+        sexp out;
+        sexp error;
+        bool had_error = true;
+        while (reader_read(f, &out, &error)) {
+            scheme_global_eval(out);
+
+            // feof really sucks and doesn't work right unless the EOF
+            // has actually been read
+            ungetc(fgetc(f), f);
+            if (feof(f)) {
+                had_error = false;
+                break;
+            }
+        }
+
+        if (had_error) {
+            printf("read error: %s\n", error->string_value);
+        }
+
+        return 0;
+    }
+
+    puts("usage: scheme [file.scm]");
+    return 1;
 }

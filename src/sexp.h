@@ -39,6 +39,10 @@ typedef struct _sexp {
     };
 }* sexp;
 
+static inline bool sexp_is_truthy(sexp s) {
+    return !(s->kind == SEXP_BOOL && s->bool_value == false);
+}
+
 static inline bool sexp_is_empty(sexp s) {
     return s->kind == SEXP_EMPTY;
 }

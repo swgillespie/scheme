@@ -62,6 +62,28 @@ INTRINSIC_DEF("/", 2, numeric_div, {
     return gc_allocate_number(lhs / rhs);
 });
 
+INTRINSIC_DEF("=", 2, numeric_equals, {
+    scheme_number lhs = 0;
+    scheme_number rhs = 0;
+    if (!sexp_extract_number(args[0], &lhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    if (!sexp_extract_number(args[1], &rhs)) {
+        fatal_error("type error: not a number");
+    }
+
+    return gc_allocate_bool(lhs == rhs);
+});
+
+INTRINSIC_DEF("not", 1, boolean_not, {
+    if (sexp_is_truthy(args[0])) {
+        return gc_allocate_bool(false);
+    } else {
+        return gc_allocate_bool(true);
+    }
+});
+
 INTRINSIC_DEF("car", 1, list_car, {
     sexp car = NULL;
     sexp cdr = NULL;
